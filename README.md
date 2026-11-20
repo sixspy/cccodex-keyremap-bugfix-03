@@ -32,6 +32,30 @@
 - 废弃旧键只读保留 vs 重写正式键
 - 生效窗原子切换 vs 双窗按事件时裁
 
+## 冲突漏计切断（2026-11-20 锁定）
+
+择定**甲路径**，详见 `docs/漏计切断卡.md`：
+
+- 无映射键先写冲突行（带 `batch_no`），再允许批继续；任一失败整笔回滚，正式零增。
+- 无映射键永不写 `formal_entities`；有映射键与冲突行同事务提交。
+- 同批号并发：先到者持批锁，后到者记争用并返回 423；批终结后重扫同批号同样记争用。
+- 五处同态：冲突列表 / 正式实体 / 批回执 / 互证页 / 入站残留。
+
+批链路接口：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/batch-remap` | 批重映，body `{batch_no, old_keys[]}` |
+| GET | `/api/conflicts?batch_no=` | 按批查冲突 |
+| GET | `/api/formal?batch_no=` | 按批查正式实体 |
+| GET | `/api/batches/{batch_no}/receipt` | 批回执 |
+| GET | `/api/attestation?batch_no=` | 互证页（五处同态检查） |
+| GET | `/api/inbound?batch_no=` | 入站残留 |
+| GET | `/api/contention?batch_no=` | 抢批争用记录 |
+| GET | `/api/deviations` | 偏离切断卡记账（漏计偏了） |
+
+夹具：`fixtures/batch_unmapped_mixed.json`（混批漏计）、`fixtures/batch_contention.json`（抢批）。
+
 ## 启动（一键）
 
 `powershell

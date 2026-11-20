@@ -53,7 +53,10 @@ createApp({
     const username=ref('admin'), password=ref('123456'), err=ref(''), actionErr=ref('');
     const leftTab=ref(0), rightTab=ref(0);
     const versions=ref([]), mappings=ref([]), formal=ref([]), conflicts=ref([]);
+    const batches=ref([]), inbound=ref([]), contention=ref([]), attest=ref(null), deviations=ref([]);
     const oldKey=ref('OLD-B1');
+    const batchKeys=ref('OLD-A1,OLD-B1,OLD-ZZ-01'), batchNo=ref('B-2026-1120-MIX');
+    const queryBatch=ref('');
     function auth(){return {Authorization:'Bearer '+token.value,'Content-Type':'application/json'};}
     async function login(){
       err.value='';
@@ -80,6 +83,20 @@ createApp({
       formal.value=Array.isArray(f.items)?f.items:[];
       const c=await loadJson('/api/conflicts'); if(c===null) return;
       conflicts.value=Array.isArray(c.items)?c.items:[];
+      const b=await loadJson('/api/batches'); if(b===null) return;
+      batches.value=Array.isArray(b.items)?b.items:[];
+      const i=await loadJson('/api/inbound'); if(i===null) return;
+      inbound.value=Array.isArray(i.items)?i.items:[];
+      const ct=await loadJson('/api/contention'); if(ct===null) return;
+      contention.value=Array.isArray(ct.items)?ct.items:[];
+      const dv=await loadJson('/api/deviations'); if(dv!==null) deviations.value=Array.isArray(dv.items)?dv.items:[];
+      await refreshAttest();
+    }
+    async function refreshAttest(){
+      attest.value=null;
+      if(!queryBatch.value){ return; }
+      const a=await loadJson('/api/attestation?batch_no='+encodeURIComponent(queryBatch.value));
+      if(a!==null) attest.value=a;
     }
     async function doRemap(){
       actionErr.value='';
@@ -87,8 +104,18 @@ createApp({
       const j=await r.json(); actionErr.value=r.ok?('正式键 '+j.entity_key):(j.detail||'失败');
       await refresh();
     }
+    async function doBatch(){
+      actionErr.value='';
+      const keys=batchKeys.value.split(',').map(s=>s.trim()).filter(Boolean);
+      queryBatch.value=batchNo.value;
+      const r=await fetch('/api/batch-remap',{method:'POST',headers:auth(),body:JSON.stringify({batch_no:batchNo.value,old_keys:keys})});
+      const j=await r.json();
+      actionErr.value=r.ok?('批 '+j.batch_no+' 结束：冲突 '+j.conflict_count+' / 正式 '+j.formal_count):(j.detail||'失败');
+      await refresh();
+    }
     onMounted(()=>{if(token.value)refresh();});
-    return {token,user,username,password,err,actionErr,leftTab,rightTab,versions,mappings,formal,conflicts,oldKey,login,logout,doRemap};
+    return {token,user,username,password,err,actionErr,leftTab,rightTab,versions,mappings,formal,conflicts,oldKey,login,logout,doRemap,
+      batches,inbound,contention,attest,deviations,batchKeys,batchNo,queryBatch,doBatch,refreshAttest};
   },
   template:`
   <div v-if="!token" class="login">
@@ -121,6 +148,12 @@ createApp({
           <label>old_key</label>
           <input v-model="oldKey"/>
           <button class="primary" @click="doRemap">重映入正式区</button>
+          <h2 style="margin-top:14px">Batch Remap</h2>
+          <label>batch_no</label>
+          <input v-model="batchNo"/>
+          <label>old_keys（逗号分隔）</label>
+          <input v-model="batchKeys"/>
+          <button class="primary" @click="doBatch">批重映</button>
           <div class="err">{{actionErr}}</div>
         </div>
       </div>
@@ -129,16 +162,45 @@ createApp({
         <div class="tabs">
           <button :class="{on:rightTab===0}" @click="rightTab=0">正式区</button>
           <button :class="{on:rightTab===1}" @click="rightTab=1">冲突队列</button>
+          <button :class="{on:rightTab===2}" @click="rightTab=2">批回执</button>
+          <button :class="{on:rightTab===3}" @click="rightTab=3">互证</button>
+          <button :class="{on:rightTab===4}" @click="rightTab=4">入站残留</button>
         </div>
         <div class="box" v-show="rightTab===0">
           <h2>Formal Zone</h2>
-          <table><thead><tr><th>entity</th><th>from</th><th>ver</th><th>at</th></tr></thead>
-          <tbody><tr v-for="f in formal" :key="f.id"><td class="ok">{{f.entity_key}}</td><td>{{f.mapped_from}}</td><td>{{f.version}}</td><td>{{f.created_at}}</td></tr></tbody></table>
+          <table><thead><tr><th>entity</th><th>from</th><th>ver</th><th>batch</th><th>at</th></tr></thead>
+          <tbody><tr v-for="f in formal" :key="f.id"><td class="ok">{{f.entity_key}}</td><td>{{f.mapped_from}}</td><td>{{f.version}}</td><td>{{f.batch_no||'-'}}</td><td>{{f.created_at}}</td></tr></tbody></table>
         </div>
         <div class="box" v-show="rightTab===1">
           <h2>Conflicts</h2>
-          <table><thead><tr><th>old</th><th>reason</th><th>status</th></tr></thead>
-          <tbody><tr v-for="c in conflicts" :key="c.id"><td class="bad">{{c.old_key}}</td><td>{{c.reason}}</td><td>{{c.status}}</td></tr></tbody></table>
+          <table><thead><tr><th>old</th><th>batch</th><th>reason</th><th>status</th></tr></thead>
+          <tbody><tr v-for="c in conflicts" :key="c.id"><td class="bad">{{c.old_key}}</td><td>{{c.batch_no||'-'}}</td><td>{{c.reason}}</td><td>{{c.status}}</td></tr></tbody></table>
+        </div>
+        <div class="box" v-show="rightTab===2">
+          <h2>Batch Receipts</h2>
+          <table><thead><tr><th>batch</th><th>flag</th><th>conf</th><th>formal</th><th>inbound</th></tr></thead>
+          <tbody><tr v-for="b in batches" :key="b.id"><td>{{b.batch_no}}</td><td class="ok">{{b.ended_flag}}</td><td class="bad">{{b.conflict_count}}</td><td>{{b.formal_count}}</td><td>{{b.inbound_count}}</td></tr></tbody></table>
+          <h2 style="margin-top:14px">Contention</h2>
+          <table><thead><tr><th>batch</th><th>later</th><th>holder</th></tr></thead>
+          <tbody><tr v-for="x in contention" :key="x.id"><td>{{x.batch_no}}</td><td class="bad">{{x.owner}}</td><td>{{x.holder}}</td></tr></tbody></table>
+        </div>
+        <div class="box" v-show="rightTab===3">
+          <h2>Attestation</h2>
+          <label>batch_no</label>
+          <input v-model="queryBatch"/><button class="ghost" @click="refreshAttest">互证</button>
+          <div v-if="attest">
+            <p :class="attest.ok?'ok':'bad'">{{attest.ok?'五处同态':'存在不一致'}} · 冲突 {{attest.counts.conflicts}} / 正式 {{attest.counts.formal}} / 入站 {{attest.counts.inbound}}</p>
+            <table><thead><tr><th>check</th><th>result</th></tr></thead>
+            <tbody><tr v-for="ch in attest.checks" :key="ch.name"><td>{{ch.name}}</td><td :class="ch.ok?'ok':'bad'">{{ch.ok?'OK':ch.detail}}</td></tr></tbody></table>
+          </div>
+        </div>
+        <div class="box" v-show="rightTab===4">
+          <h2>Inbound Residue</h2>
+          <table><thead><tr><th>batch</th><th>old</th><th>disposition</th><th>entity</th></tr></thead>
+          <tbody><tr v-for="i in inbound" :key="i.id"><td>{{i.batch_no}}</td><td>{{i.old_key}}</td><td :class="i.disposition==='冲突'?'bad':'ok'">{{i.disposition}}</td><td>{{i.entity_key||'-'}}</td></tr></tbody></table>
+          <h2 style="margin-top:14px">Deviations</h2>
+          <table><thead><tr><th>batch</th><th>detail</th></tr></thead>
+          <tbody><tr v-for="d in deviations" :key="d.id"><td>{{d.batch_no||'-'}}</td><td class="bad">{{d.detail}}</td></tr></tbody></table>
         </div>
       </div>
     </div>
